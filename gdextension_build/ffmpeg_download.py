@@ -7,34 +7,24 @@ import SCons
 
 FFMPEG_DOWNLOAD_WIN64 = "https://github.com/EIRTeam/FFmpeg-Builds/releases/download/autobuild-2023-07-24-08-52/ffmpeg-N-111611-g5b11ee9429-win64-lgpl-godot.tar.xz"
 FFMPEG_DOWNLOAD_LINUX64 = "https://github.com/EIRTeam/FFmpeg-Builds/releases/download/autobuild-2023-07-24-08-52/ffmpeg-N-111611-g5b11ee9429-linux64-lgpl-godot.tar.xz"
-ffmpeg_versions = {
-    "avcodec": "60",
-    "avfilter": "9",
-    "avformat": "60",
-    "avutil": "58",
-    "swresample": "4",
-    "swscale": "7",
-}
-
-
 def get_ffmpeg_install_targets(env, target_dir):
     if env["platform"] == "linuxbsd" or env["platform"] == "linux":
-        return [os.path.join(target_dir, f"lib{lib}.so.{version}") for lib, version in ffmpeg_versions.items()]
+        return [os.path.join(target_dir, "libffmpeg.so")]
     elif env["platform"] == "android":
-        return [os.path.join(target_dir, f"lib{lib}.so") for lib in ffmpeg_versions]
+        return [os.path.join(target_dir, "libffmpeg.so")]
     elif env["platform"] == "macos":
-        return [os.path.join(target_dir, f"lib{lib}.dylib") for lib in ffmpeg_versions]
+        return [os.path.join(target_dir, "libffmpeg.dylib")]
     else:
-        return [os.path.join(target_dir, f"{lib}-{version}.dll") for lib, version in ffmpeg_versions.items()]
+        return [os.path.join(target_dir, "ffmpeg.dll")]
 
 
 def get_ffmpeg_install_sources(env, source_dir):
     if env["platform"] in ("linuxbsd", "linux", "android"):
-        return [os.path.join(source_dir, f"lib/lib{lib}.so") for lib in ffmpeg_versions]
+        return [os.path.join(source_dir, "lib/libffmpeg.so")]
     elif env["platform"] == "macos":
-        return [os.path.join(source_dir, f"lib/lib{lib}.dylib") for lib in ffmpeg_versions]
+        return [os.path.join(source_dir, "lib/libffmpeg.dylib")]
     else:
-        return [os.path.join(source_dir, f"bin/{lib}-{version}.dll") for lib, version in ffmpeg_versions.items()]
+        return [os.path.join(source_dir, "bin/ffmpeg.dll")]
 
 
 def get_download_url(env):
@@ -80,9 +70,9 @@ def _ffmpeg_emitter(target, source, env):
         dst = os.path.dirname(target[0].get_path())
     target += get_ffmpeg_install_sources(env, dst)
     if env["platform"] == "windows":
-        target += [os.path.join(dst, f"lib/{lib}.lib") for lib, version in ffmpeg_versions.items()]
+        target += [os.path.join(dst, "lib/ffmpeg.lib")]
     else:
-        target += [os.path.join(dst, f"lib/lib{lib}.so") for lib, version in ffmpeg_versions.items()]
+        target += [os.path.join(dst, "lib/libffmpeg.so")]
 
     emitter_headers = [
         "libavcodec/codec.h",

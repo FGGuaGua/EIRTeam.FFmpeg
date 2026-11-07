@@ -3,7 +3,6 @@ import atexit
 import sys
 import time
 
-import ffmpeg_download
 import glsl_builders
 import methods
 
@@ -57,7 +56,7 @@ else:
 
 opts = Variables([], ARGUMENTS)
 opts.Add(BoolVariable("verbose", "Enable verbose output for the compilation", False))
-opts.Add(("ffmpeg_path", "Path to FFmpeg", ""))
+opts.Add(("ffmpeg_path", "Path to FFmpeg", "E:\\Tools\\godot\\EIRTeam.FFmpeg-master\\ffmpeg"))
 
 opts.Update(env)
 
@@ -73,7 +72,7 @@ sources = Glob("../*.cpp")
 sources.extend(Glob("*.cpp"))
 ffmpeg_path = env["ffmpeg_path"]
 
-ffmpeg_libs = ["avcodec", "avfilter", "avformat", "avutil", "swresample", "swscale"]
+ffmpeg_libs = ["ffmpeg"]
 
 env.Append(LIBS=ffmpeg_libs)
 env.Prepend(CPPPATH=f"{ffmpeg_path}/include")
@@ -116,17 +115,13 @@ def install_gdextension_libname(target, source, env):
     methods.osx_rename_libname("^@.*framework/", "@loader_path/../", "", [lib.get_path() for lib in target])
 
 
-ffmpeg_install_action = ffmpeg_download.ffmpeg_install(env, f"#{addon_platform_dir}", ffmpeg_path)
 env.Depends(sources, env.Install(addon_base_dir, "ffmpeg.gdextension"))
-env.Depends(sources, ffmpeg_install_action)
-
 env.GLSL_HEADER("../yuv_to_rgb.glsl")
 env.Depends(Glob("../*.glsl.gen.h"), ["#glsl_builders.py"])
 
 Default(library)
 
 if env["platform"] == "macos":
-    env.AddPostAction(ffmpeg_install_action, env.Action(install_ffmpeg_libname))
     env.AddPostAction(library, env.Action(install_gdextension_libname))
 
 

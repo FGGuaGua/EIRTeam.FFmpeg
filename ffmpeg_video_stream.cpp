@@ -281,11 +281,21 @@ Error FFmpegVideoStreamPlayback::load(Ref<FileAccess> p_file_access) {
 		return FAILED;
 	}
 
+	bool should_use_gpu_conversion = false;
 	if (decoder->get_frame_format() == FFmpegFrameFormat::YUV420P || decoder->get_frame_format() == FFmpegFrameFormat::YUVA420P) {
+		RD *rd = RS::get_singleton()->get_rendering_device();
+		if (rd != nullptr) {
+			should_use_gpu_conversion = true;
+		}
+	}
+
+	if ((decoder->get_frame_format() == FFmpegFrameFormat::YUV420P || decoder->get_frame_format() == FFmpegFrameFormat::YUVA420P) && should_use_gpu_conversion) {
+		print_line("Using GPU YUV conversion");
 		yuv_converter.instantiate();
 		yuv_converter->set_frame_size(size);
 		yuv_texture = yuv_converter->get_output_texture();
 	} else {
+		print_line("Using CPU RGBA conversion");
 #ifdef GDEXTENSION
 		texture = ImageTexture::create_from_image(Image::create(size.x, size.y, false, Image::FORMAT_RGBA8));
 #else
@@ -350,7 +360,10 @@ Ref<Texture2D> FFmpegVideoStreamPlayback::get_texture_internal() const {
 	return last_frame_texture;
 #else
 	if (yuv_converter.is_valid()) {
-		return yuv_converter->get_output_texture();
+		RD *rd = RS::get_singleton()->get_rendering_device();
+		if (rd != nullptr) {
+			return yuv_converter->get_output_texture();
+		}
 	}
 	return texture;
 #endif
@@ -614,13 +627,8 @@ void YUVGPUConverter::_convert_internal() {
 	push_constant.use_alpha = yuv_plane_images[3].is_valid() ? 1 : 0;
 
 	PackedByteArray push_constant_data;
-	// Godot 4.7's RenderingDevice strictly validates the push constant size
-	// against what the compute shader declares (4 bytes here: bool use_alpha).
-	// Uploading the padded 16-byte struct gets the call rejected on every
-	// frame, so the YUV->RGB pipeline never executes and video never renders
-	// in Forward+/Mobile on Godot 4.7+. Pass only the declared 4 bytes.
-	push_constant_data.resize(4);
-	memcpy(push_constant_data.ptrw(), &push_constant, 4);
+	push_constant_data.resize(sizeof(push_constant));
+	memcpy(push_constant_data.ptrw(), &push_constant, push_constant_data.size());
 
 	ComputeListID compute_list = rd->compute_list_begin();
 	rd->compute_list_bind_compute_pipeline(compute_list, pipeline);

@@ -30,6 +30,7 @@
 
 #include "video_decoder.h"
 #include "ffmpeg_frame.h"
+#include "gdextension_build/ffmpeg_version_compat.h"
 
 #include "libavcodec/codec.h"
 #include "libavcodec/codec_id.h"
@@ -124,37 +125,14 @@ void VideoDecoder::prepare_decoding() {
 	ERR_FAIL_COND_MSG(find_stream_info_result < 0, vformat("Error finding stream info: %s", ffmpeg_get_error_message(find_stream_info_result)));
 
 	int stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, (const AVCodec **)&codec, 0);
-
-	// The stream was found but FFmpeg has no decoder for its codec.
-	// Re-probe ignoring decoder availability so we can name the codec and try a fallback.
-	if (stream_index == AVERROR_DECODER_NOT_FOUND && format_context->video_codec == nullptr) {
-		int raw_stream_index = av_find_best_stream(format_context, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
-		if (raw_stream_index >= 0) {
-			const AVCodecID unsupported_id = format_context->streams[raw_stream_index]->codecpar->codec_id;
-			String fallback_name = _codec_id_to_preferred_decoder_name(unsupported_id);
-			if (!fallback_name.is_empty()) {
-				forced_video_codec = avcodec_find_decoder_by_name(fallback_name.utf8().get_data());
-				if (forced_video_codec != nullptr) {
-					print_line(vformat("No default decoder for '%s', retrying with '%s'.",
-							avcodec_get_name(unsupported_id), fallback_name));
-					avformat_close_input(&format_context);
-					prepare_decoding();
-					return;
-				}
-			}
-			ERR_FAIL_MSG(vformat("No decoder found for '%s': codec not supported by this FFmpeg build.",
-					avcodec_get_name(unsupported_id)));
-		}
-	}
-
 	ERR_FAIL_COND_MSG(stream_index < 0, vformat("Couldn't find video stream: %s", ffmpeg_get_error_message(stream_index)));
 
 	{
 		if (format_context->video_codec == nullptr) {
 			const AVCodecID codec_id = format_context->streams[stream_index]->codecpar->codec_id;
-			String preferred_decoder_name = _codec_id_to_preferred_decoder_name(codec_id);
-			if (!preferred_decoder_name.is_empty()) {
-				forced_video_codec = avcodec_find_decoder_by_name(preferred_decoder_name.utf8().get_data());
+			String libvpx_decoder_name = _codec_id_to_libvpx(codec_id);
+			if (!libvpx_decoder_name.is_empty()) {
+				forced_video_codec = avcodec_find_decoder_by_name(libvpx_decoder_name.utf8().get_data());
 				if (forced_video_codec != nullptr) {
 					avformat_close_input(&format_context);
 					prepare_decoding();
@@ -185,13 +163,22 @@ Error VideoDecoder::recreate_codec_context() {
 	}
 
 	AVCodecParameters codec_params = *video_stream->codecpar;
-	// YUV conversion needs rendering device
 	bool has_rendering_device = RenderingServer::get_singleton()->get_rendering_device() != nullptr;
 	bool is_yuv_pixel_fmt = codec_params.format == AVPixelFormat::AV_PIX_FMT_YUV420P || codec_params.format == AVPixelFormat::AV_PIX_FMT_YUVA420P;
-	if (is_yuv_pixel_fmt && has_rendering_device) {
+
+#if defined(__ANDROID__) || defined(ANDROID)
+	bool use_gpu_rendering = false;
+	print_line("Android detected, forcing CPU rendering");
+#else
+	bool use_gpu_rendering = has_rendering_device;
+#endif
+
+	if (is_yuv_pixel_fmt && use_gpu_rendering) {
 		frame_format = codec_params.format == AVPixelFormat::AV_PIX_FMT_YUV420P ? FFmpegFrameFormat::YUV420P : FFmpegFrameFormat::YUVA420P;
+		print_line("Using YUV format (GPU path)");
 	} else {
 		frame_format = FFmpegFrameFormat::RGBA8;
+		print_line("Using RGBA format (CPU path)");
 	}
 
 	const AVCodec *decoder = forced_video_codec;
@@ -386,8 +373,10 @@ void VideoDecoder::_read_decoded_frames(AVFrame *p_received_frame) {
 			break;
 		}
 
-		// use `best_effort_timestamp` as it can be more accurate if timestamps from the source file (pts) are broken.
-		int64_t frame_timestamp = p_received_frame->best_effort_timestamp != AV_NOPTS_VALUE ? p_received_frame->best_effort_timestamp : p_received_frame->pts;
+		int64_t frame_timestamp = get_frame_best_effort_timestamp(p_received_frame);
+		if (frame_timestamp == AV_NOPTS_VALUE) {
+			frame_timestamp = get_frame_pts(p_received_frame);
+		}
 		double frame_time = (frame_timestamp - video_stream->start_time) * video_time_base_in_seconds * 1000.0;
 
 		if (skip_output_until_time > frame_time || skip_current_outputs.is_set()) {
@@ -483,8 +472,10 @@ void VideoDecoder::_read_decoded_audio_frames(AVFrame *p_received_frame) {
 			break;
 		}
 
-		// use `best_effort_timestamp` as it can be more accurate if timestamps from the source file (pts) are broken.
-		int64_t frame_timestamp = p_received_frame->best_effort_timestamp != AV_NOPTS_VALUE ? p_received_frame->best_effort_timestamp : p_received_frame->pts;
+		int64_t frame_timestamp = get_frame_best_effort_timestamp(p_received_frame);
+		if (frame_timestamp == AV_NOPTS_VALUE) {
+			frame_timestamp = get_frame_pts(p_received_frame);
+		}
 		double frame_time = (frame_timestamp - audio_stream->start_time) * audio_time_base_in_seconds * 1000.0;
 
 		if (skip_output_until_time > frame_time || skip_current_outputs.is_set()) {
@@ -661,24 +652,19 @@ AVFrame *VideoDecoder::_ensure_frame_audio_format(AVFrame *p_frame, AVSampleForm
 	return out_frame;
 }
 
-String VideoDecoder::_codec_id_to_preferred_decoder_name(AVCodecID p_codec_id) const {
+String VideoDecoder::_codec_id_to_libvpx(AVCodecID p_codec_id) const {
+	String out;
 	switch (p_codec_id) {
 		case AVCodecID::AV_CODEC_ID_VP8: {
-			return "libvpx";
+			out = "libvpx";
 		} break;
 		case AVCodecID::AV_CODEC_ID_VP9: {
-			return "libvpx-vp9";
-		} break;
-		case AVCodecID::AV_CODEC_ID_HEVC: {
-			return "hevc";
-		} break;
-		case AVCodecID::AV_CODEC_ID_AV1: {
-			return "libaom-av1";
-		} break;
+			out = "libvpx-vp9";
+		}
 		default: {
 		} break;
 	}
-	return String();
+	return out;
 }
 
 void VideoDecoder::seek(double p_time, bool p_wait) {
@@ -766,16 +752,50 @@ Vector2i VideoDecoder::get_size() const {
 	return Vector2i();
 }
 
+static int get_supported_sample_rate(int rate) {
+	if (rate <= 8000) {
+		return 8000;
+	} else if (rate <= 11025) {
+		return 11025;
+	} else if (rate <= 16000) {
+		return 16000;
+	} else if (rate <= 22050) {
+		return 22050;
+	} else if (rate <= 32000) {
+		return 32000;
+	} else if (rate <= 44100) {
+		return 44100;
+	} else if (rate <= 48000) {
+		return 48000;
+	} else {
+		return 96000;
+	}
+}
+
 int VideoDecoder::get_audio_mix_rate() const {
 	if (audio_stream) {
-		return audio_codec_context->sample_rate;
+		return get_supported_sample_rate(audio_codec_context->sample_rate);
 	}
 	return 0;
 }
 
+static int get_supported_channel_count(int channels) {
+	if (channels <= 1) {
+		return 1;
+	} else if (channels <= 2) {
+		return 2;
+	} else if (channels <= 4) {
+		return 4;
+	} else if (channels <= 6) {
+		return 6;
+	} else {
+		return 8;
+	}
+}
+
 int VideoDecoder::get_audio_channel_count() const {
 	if (audio_stream) {
-		return audio_codec_context->ch_layout.nb_channels;
+		return get_supported_channel_count(audio_codec_context->ch_layout.nb_channels);
 	}
 	return 0;
 }
