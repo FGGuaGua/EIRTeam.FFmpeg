@@ -56,7 +56,7 @@ else:
 
 opts = Variables([], ARGUMENTS)
 opts.Add(BoolVariable("verbose", "Enable verbose output for the compilation", False))
-opts.Add(("ffmpeg_path", "Path to FFmpeg", "E:\\Tools\\godot\\EIRTeam.FFmpeg-master\\ffmpeg"))
+opts.Add(("ffmpeg_path", "Path to FFmpeg", ""))
 
 opts.Update(env)
 
